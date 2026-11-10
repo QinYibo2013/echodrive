@@ -251,7 +251,7 @@ async function modify(request, token, route, parts) {
       item: { "@microsoft.graph.conflictBehavior": "fail", name, fileSize: file.size },
     }))).json();
     const result = await fetch(signedUrl(session.uploadUrl), {
-      method: "PUT", redirect: "error", body: file,
+      method: "PUT", redirect: "manual", body: file,
       headers: { "Content-Range": `bytes 0-${file.size - 1}/${file.size}` },
     });
     if (![200, 201].includes(result.status)) {
@@ -319,7 +319,7 @@ async function exchange(env, fields) {
   let result;
   try {
     result = await fetch(AUTH + "/token", {
-      method: "POST", redirect: "error", signal: AbortSignal.timeout(10000),
+      method: "POST", redirect: "manual", signal: AbortSignal.timeout(10000),
       body: new URLSearchParams({ client_id: env.MS_CLIENT_ID, client_secret: env.MS_CLIENT_SECRET, ...fields }),
     });
   } catch {
