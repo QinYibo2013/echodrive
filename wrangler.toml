@@ -1,0 +1,5 @@
+name = "echodrive"
+main = "echodrive-worker.mjs"
+compatibility_date = "2026-11-10"
+workers_dev = true
+keep_vars = true
