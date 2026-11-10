@@ -45,6 +45,9 @@ const ICONS = {
   cloud: '<path d="M6.5 18a4.5 4.5 0 0 1-.4-9 6 6 0 0 1 11.5 1.6A3.8 3.8 0 0 1 18 18z"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   file: '<path d="M6 3h8l4 4v14H6z M14 3v5h4 M9 12h6m-6 4h6"/>',
+  search: '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5"/>',
+  back: '<path d="M20 12H5m6-6-6 6 6 6"/>',
+  exit: '<path d="M12 4H5v16h7m-2-8h11m-4-4 4 4-4 4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   upload: '<path d="M12 16V4m-5 5 5-5 5 5M4 15v5h16v-5"/>',
   lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3m-4 5v2"/>',
@@ -85,6 +88,37 @@ document.querySelectorAll("time[datetime]").forEach(time => {
     year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
   }).format(date);
 });
+const search = document.querySelector("[data-search]");
+const fileList = document.querySelector("[data-file-list]");
+if (search && fileList) {
+  const rows = Array.from(fileList.querySelectorAll("[data-file-row]"));
+  const chips = Array.from(document.querySelectorAll("[data-kind]"));
+  const count = document.querySelector("[data-count]");
+  const noMatches = document.querySelector("[data-no-matches]");
+  let kind = "all";
+
+  function filterFiles() {
+    const term = search.value.trim().toLocaleLowerCase();
+    let visible = 0;
+    for (const row of rows) {
+      const matchesKind = kind === "all" || kind === row.dataset.fileRow;
+      const matchesName = row.querySelector(".filename").textContent.toLocaleLowerCase().includes(term);
+      row.hidden = !(matchesKind && matchesName);
+      if (!row.hidden) visible++;
+    }
+    count.textContent = visible + " 项";
+    noMatches.hidden = !rows.length || visible > 0;
+  }
+
+  search.addEventListener("input", filterFiles);
+  for (const chip of chips) {
+    chip.addEventListener("click", () => {
+      kind = chip.dataset.kind;
+      for (const choice of chips) choice.setAttribute("aria-pressed", String(choice === chip));
+      filterFiles();
+    });
+  }
+}
 const toast = document.querySelector(".toast");
 if (toast) {
   const url = new URL(location.href);
@@ -106,7 +140,7 @@ function page(title, content, status = 200, extra, layout = "center") {
   .bar{height:64px;border-bottom:1px solid var(--line);background:var(--paper);display:flex;align-items:center;padding:0 max(20px,calc((100vw - 1360px)/2));gap:14px}
   .brand{display:inline-flex;align-items:center;gap:10px;color:var(--ink);font-size:19px;font-weight:750;white-space:nowrap}
   .mark{display:grid;place-items:center;background:var(--pale);color:var(--ink);width:36px;height:36px;border-radius:10px}.mark svg{width:24px;height:24px}
-  .brand:hover{text-decoration:none}.shell{max-width:1400px;margin:auto;padding:30px 28px}.center{display:grid;place-items:center;min-height:calc(100vh - 64px);padding:28px 16px}
+  .brand:hover{text-decoration:none}.shell{min-width:0;padding:26px 28px 32px}.center{display:grid;place-items:center;min-height:calc(100vh - 64px);padding:28px 16px}
   .card{width:min(100%,420px);background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:34px;box-shadow:0 8px 24px #00000012}.card h1{font-size:26px;margin:13px 0 6px}
   .lock{color:var(--ink);background:var(--pale);width:48px;height:48px;border-radius:14px;display:grid;place-items:center}.lock svg{width:24px;height:24px}
   p{margin:0 0 16px}.muted,.help{color:var(--muted)}.help{font-size:13px}.help a{color:var(--blue)}.card form{margin:22px 0 14px}.card form .primary{width:100%;justify-content:center;margin-top:14px}
@@ -129,8 +163,26 @@ function page(title, content, status = 200, extra, layout = "center") {
   .danger-btn{background:#a62936;border-color:#a62936;color:white}.danger-btn:hover{background:#85212c}.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100% - 28px);padding:9px 12px 9px 16px;background:#242424;color:white;border-radius:10px;box-shadow:var(--shadow);z-index:3}
   .toast .icon-btn{background:transparent;border:0;color:white}.toast>svg{color:#a6d871}
   @media(max-width:640px){.bar{height:56px}.center{min-height:calc(100vh - 56px)}.shell{padding:20px 12px}.toolbar{align-items:flex-start}.crumbs{width:100%;font-size:19px}.grid .date{display:none}.grid .size{width:78px}.grid th,.grid td{padding:9px 8px}.grid .row-actions{width:52px}.card{padding:25px}.empty{min-height:320px}.files{min-height:320px}}
-  </style></head><body><header class="bar"><a class="brand" href="/"><span class="mark">${icon("cloud")}</span>EchoDrive</a></header>
-  ${layout === "drive" ? `<main class="shell">${content}</main>` : `<main class="center"><section class="card"><span class="lock">${icon("lock")}</span><h1>${escapeHtml(title)}</h1>${content}</section></main>`}</body></html>`, status, headers);
+  .bar.drive-bar{display:grid;grid-template-columns:minmax(160px,1fr) minmax(200px,480px) minmax(110px,1fr);padding:0 24px;gap:18px}
+  .drive-bar .bar-end{justify-self:end}.bar-end .btn{gap:7px}
+  .bar-search{display:flex;align-items:center;gap:9px;padding:0 13px;border:1px solid var(--line);background:#f6f6f6;border-radius:9px;color:var(--muted)}
+  .bar-search input[type="search"]{padding:8px 0;margin:0;border:0;background:transparent;border-radius:0}
+  .bar-search:focus-within{border-color:var(--blue);background:white}.bar-search input:focus-visible{outline:none}
+  .drive-layout{display:grid;grid-template-columns:208px minmax(0,1fr);min-height:calc(100vh - 64px)}
+  .side{padding:24px 13px 18px 15px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
+  .side-caption{padding:0 11px;color:var(--muted);font-size:12px;font-weight:650}
+  .side-link{display:flex;align-items:center;gap:10px;border-radius:7px;padding:9px 11px;font-weight:650}.side-link.active{background:#ececec;box-shadow:inset 3px 0 var(--blue)}
+  .storage-note{margin-top:auto;padding:12px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}.storage-note strong{display:block;color:var(--ink);margin-bottom:3px}
+  .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 13px}.filters .btn{min-height:33px;padding:4px 11px;border-radius:18px;font-size:13px;font-weight:550}.filters .btn[aria-pressed="true"]{background:#ececec;border-color:#d5d5d5;font-weight:700}
+  .item-count{margin-left:auto;color:var(--muted);font-size:13px}.grid th,.grid td{padding-block:9px}.grid .name{min-width:0}
+  .files{min-height:clamp(330px,65vh,740px)}.empty{min-height:inherit}.empty-art{position:relative;width:118px;height:94px;background:transparent}.empty-art>svg:first-child{width:104px;height:104px;color:#c9c9c9;fill:#efefef;stroke-width:1.15}
+  .empty-art>svg:last-child{position:absolute;bottom:6px;right:15px;width:45px;height:45px;color:#a56b17;fill:#ffda87;filter:drop-shadow(0 3px 3px #0002)}
+  .no-matches{padding:36px 14px;text-align:center;color:var(--muted)}[hidden]{display:none!important}
+  @media(max-width:760px){.drive-layout{grid-template-columns:1fr}.side{display:none}.bar.drive-bar{padding:0 12px;grid-template-columns:auto minmax(0,1fr) auto;gap:8px}.bar.drive-bar .brand{font-size:0}.bar-end .btn{font-size:0;min-width:38px;padding:6px}.bar-search{padding:0 8px;gap:5px}.bar-search input[type="search"]{font-size:14px}.shell{padding:18px 12px}.files{min-height:360px}}
+  </style></head><body><header class="bar ${layout === "drive" ? "drive-bar" : ""}"><a class="brand" href="/"><span class="mark">${icon("cloud")}</span>EchoDrive</a>
+  ${layout === "drive" ? `<label class="bar-search">${icon("search")}<input type="search" data-search placeholder="搜索本页文件" aria-label="搜索本页文件" autocomplete="off"></label>
+  <form method="post" action="/logout" class="bar-end"><button class="btn quiet" aria-label="退出网盘">${icon("exit")}退出</button></form>` : ""}</header>
+  ${layout === "drive" ? content : `<main class="center"><section class="card"><span class="lock">${icon("lock")}</span><h1>${escapeHtml(title)}</h1>${content}</section></main>`}</body></html>`, status, headers);
 }
 
 function dialog(id, title, content) {
@@ -312,8 +364,8 @@ async function list(token, url, parts) {
       );
     }
     const modified = escapeHtml(item.lastModifiedDateTime || "");
-    return `<tr><td><div class="name"><span class="file-icon ${item.folder ? "folder" : ""}">${icon(item.folder ? "folder" : "file")}</span>
-      ${link ? `<a href="${link}">${name}</a>` : `<span>${name}</span>`}</div></td>
+    return `<tr data-file-row="${item.folder ? "folder" : "file"}"><td><div class="name"><span class="file-icon ${item.folder ? "folder" : ""}">${icon(item.folder ? "folder" : "file")}</span>
+      ${link ? `<a class="filename" href="${link}">${name}</a>` : `<span class="filename">${name}</span>`}</div></td>
       <td class="date">${modified ? `<time datetime="${modified}">${modified.slice(0, 10)}</time>` : "—"}</td>
       <td class="size">${item.folder ? "—" : sizeLabel(Number(item.size || 0))}</td>
       <td class="row-actions">${blocked ? "" : `<details><summary class="icon-btn quiet" aria-label="管理 ${name}">${icon("dots")}</summary>
@@ -329,18 +381,28 @@ async function list(token, url, parts) {
   const done = url.searchParams.get("done");
   const toast = Object.hasOwn(SUCCESS, done) ? `<div class="toast" role="status">${icon("check")}${SUCCESS[done]}
     <button class="btn icon-btn" type="button" data-dismiss aria-label="关闭提示">${icon("close")}</button></div>` : "";
-  return page("EchoDrive", `<div class="toolbar"><nav class="crumbs" aria-label="当前位置">
+  return page("EchoDrive", `<div class="drive-layout"><aside class="side" aria-label="网盘导航">
+    <div class="side-caption">文件</div>
+    <a class="side-link active" href="/">${icon("folder")}我的文件</a>
+    ${parts.length ? `<a class="side-link" href="${href("/", parts.slice(0, -1))}">${icon("back")}上一级文件夹</a>` : ""}
+    <div class="storage-note"><strong>OneDrive</strong>EchoDrive 文件存储</div>
+    </aside><main class="shell"><div class="toolbar"><nav class="crumbs" aria-label="当前位置">
     ${parts.length ? '<a href="/">我的文件</a>' : '<strong aria-current="page">我的文件</strong>'}${crumbs}</nav>
-    <div class="actions"><form method="post" action="/logout"><button class="btn quiet">退出</button></form>
-    <details><summary class="primary">${icon("plus")}创建或上传</summary><div class="menu">
+    <div class="actions"><details><summary class="primary">${icon("plus")}创建或上传</summary><div class="menu">
     ${open("new-folder", "新建文件夹", "folder")}${open("upload-file", "文件上传", "upload")}</div></details></div></div>
-    <section class="files" aria-label="文件列表">${rows ? `<table class="grid"><thead><tr>
+    <div class="filters" role="group" aria-label="按类型筛选">
+      <button class="btn" type="button" data-kind="all" aria-pressed="true">全部</button>
+      <button class="btn" type="button" data-kind="folder" aria-pressed="false">${icon("folder")}文件夹</button>
+      <button class="btn" type="button" data-kind="file" aria-pressed="false">${icon("file")}文件</button>
+      <span class="item-count" data-count aria-live="polite">${data.value.length} 项</span>
+    </div>
+    <section class="files" data-file-list aria-label="文件列表">${rows ? `<table class="grid"><thead><tr>
       <th scope="col">名称</th><th scope="col" class="date">修改时间</th><th scope="col" class="size">大小</th><th scope="col" class="row-actions">操作</th>
-      </tr></thead><tbody>${rows}</tbody></table>`
-      : `<div class="empty"><span class="empty-art">${icon("cloud")}</span><h2>此文件夹为空</h2>
-        <p class="muted">上传文件或新建文件夹来整理你的资料。</p>${open("upload-file", "上传文件", "upload")}</div>`}</section>
+      </tr></thead><tbody>${rows}</tbody></table><div class="no-matches" data-no-matches hidden>没有符合条件的项目</div>`
+      : `<div class="empty"><span class="empty-art">${icon("cloud")}${icon("folder")}</span><h2>此文件夹为空</h2>
+        <p class="muted">上传文件或新建文件夹来整理你的资料。</p>${open("upload-file", "上传文件", "upload")}</div><div data-no-matches hidden></div>`}</section>
     ${next ? `<div class="pager"><a class="btn" href="${href("/", parts, { next })}">下一页 →</a></div>` : ""}
-    ${dialogs.join("")}${toast}`, 200, undefined, "drive");
+    ${dialogs.join("")}${toast}</main></div>`, 200, undefined, "drive");
 }
 
 async function download(token, url, parts) {
