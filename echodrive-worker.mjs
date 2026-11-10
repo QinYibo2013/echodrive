@@ -3,7 +3,7 @@ const CALLBACK = SITE + "/auth/callback";
 const AUTH = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const ROOT = "/me/drive/special/approot";
-const SCOPE = "https://graph.microsoft.com/Files.ReadWrite.AppFolder https://graph.microsoft.com/User.Read";
+const SCOPE = "https://graph.microsoft.com/Files.ReadWrite.AppFolder https://graph.microsoft.com/User.Read offline_access";
 const OAUTH = "__Host-echo-oauth";
 const SESSION = "__Host-echo-session";
 const COOKIE = "Path=/; Secure; HttpOnly; SameSite=Lax";
@@ -25,42 +25,6 @@ function readCookie(request, name) {
 
 function setCookie(headers, name, value, seconds) {
   headers.append("Set-Cookie", `${name}=${value}; ${COOKIE}; Max-Age=${seconds}`);
-}
-
-async function sessionKey(env) {
-  const material = encoder.encode("EchoDrive session v1\0" + env.MS_CLIENT_SECRET);
-  return crypto.subtle.importKey("raw", await crypto.subtle.digest("SHA-256", material),
-    "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-async function writeSession(headers, env, token, expiresIn) {
-  const seconds = Math.min(3600, Math.floor(Number(expiresIn)) - 30);
-  if (!(seconds > 0)) throw new Problem("微软授权有效期异常。", 502);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = encoder.encode(JSON.stringify({ token, owner: env.MS_OWNER_ID.trim(), expires: Date.now() + seconds * 1000 }));
-  const encrypted = new Uint8Array(await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv }, await sessionKey(env), data));
-  const value = base64(iv) + "." + base64(encrypted);
-  if (value.length > 9000) throw new Problem("登录会话太长，无法保存。", 502);
-  for (let i = 0; i < 3; i++) {
-    const part = value.slice(i * 3000, (i + 1) * 3000);
-    setCookie(headers, SESSION + i, part, part ? seconds : 0);
-  }
-}
-
-async function readSession(request, env) {
-  const value = [0, 1, 2].map(i => readCookie(request, SESSION + i)).join("");
-  if (!value || value.length > 9000) return null;
-  try {
-    const [iv, encrypted] = value.split(".").map(unbase64);
-    const bytes = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv }, await sessionKey(env), encrypted);
-    const session = JSON.parse(new TextDecoder().decode(bytes));
-    return session.owner === env.MS_OWNER_ID.trim() && session.expires > Date.now()
-      ? session.token : null;
-  } catch {
-    return null;
-  }
 }
 
 const escapeHtml = value => String(value).replace(/[&<>"']/g,
@@ -107,7 +71,7 @@ async function graph(token, path, options = {}) {
   headers.set("Authorization", "Bearer " + token);
   const result = await fetch(GRAPH + path, { ...options, headers, redirect: "manual" });
   if (result.ok || (options.download && result.status === 302)) return result;
-  if (result.status === 401) throw new Problem("微软会话已过期，请重新登录。", 401);
+  if (result.status === 401) throw new Problem("OneDrive 授权不可用，请返回首页重新绑定。", 401);
   const data = await result.json().catch(() => ({}));
   const detail = typeof data.error?.code === "string" ? ` / ${data.error.code}` : "";
   throw new Problem(`OneDrive 操作失败（HTTP ${result.status}${detail}）。`, result.status < 500 ? result.status : 502);
@@ -197,23 +161,20 @@ async function login(request, url, env) {
   if (!state || !verifier || state !== url.searchParams.get("state") || !code) {
     return page("登录未完成", '<p><a href="/auth/login">重新登录</a></p>', 400, headers);
   }
-  const result = await fetch(AUTH + "/token", {
-    method: "POST", redirect: "error",
-    body: new URLSearchParams({
-      client_id: env.MS_CLIENT_ID, client_secret: env.MS_CLIENT_SECRET,
-      grant_type: "authorization_code", code, redirect_uri: CALLBACK, code_verifier: verifier,
-    }),
+  const grant = await exchange(env, {
+    grant_type: "authorization_code", code, redirect_uri: CALLBACK, code_verifier: verifier,
   });
-  const { access_token: token, expires_in: expiresIn, error } = await result.json();
-  if (!result.ok || !token) {
-    return page("微软登录失败", `<p>${escapeHtml(error || result.status)}</p><a href="/">回到首页</a>`, 502, headers);
+  if (!grant.access_token || !grant.refresh_token) {
+    return page("微软授权未完成", '<p>请重新登录并允许 EchoDrive 保持 OneDrive 授权。</p><a href="/auth/login">重试</a>', 502, headers);
   }
-  const profile = await (await graph(token, "/me?$select=id")).json();
+  const profile = await (await graph(grant.access_token, "/me?$select=id")).json();
   if (profile.id !== env.MS_OWNER_ID.trim()) {
     return page("此账号没有访问权限", '<a href="/auth/login">切换微软账号</a>', 403, headers);
   }
-  await writeSession(headers, env, token, expiresIn);
-  return redirect("/", headers);
+  const ticket = randomToken();
+  await vault(env, "bind", { ticket, refresh: grant.refresh_token });
+  setCookie(headers, SETUP, ticket, 600);
+  return redirect("/setup", headers);
 }
 
 async function list(token, url, parts) {
@@ -307,12 +268,215 @@ async function modify(request, token, route, parts) {
   return redirect(localUrl("/", parts));
 }
 
+const SETUP = "__Host-echo-setup";
+const SESSION_SECONDS = 12 * 60 * 60;
+const ATTEMPT_WINDOW = 10 * 60 * 1000;
+const MAX_ATTEMPTS = 8;
+
+const randomToken = () => base64(crypto.getRandomValues(new Uint8Array(32)));
+const digest = async value => base64(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value))));
+const validTicket = value => /^[A-Za-z0-9_-]{43}$/.test(value);
+
+async function vaultKey(env) {
+  const material = encoder.encode("EchoDrive vault v1\0" + env.MS_OWNER_ID.trim() + "\0" + env.MS_CLIENT_SECRET);
+  return crypto.subtle.importKey("raw", await crypto.subtle.digest("SHA-256", material),
+    "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+async function encryptToken(env, value) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await vaultKey(env), encoder.encode(value));
+  return base64(iv) + "." + base64(new Uint8Array(data));
+}
+
+async function decryptToken(env, value) {
+  const [iv, data] = value.split(".").map(unbase64);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await vaultKey(env), data);
+  return new TextDecoder().decode(plaintext);
+}
+
+async function passwordHash(password, salt) {
+  const material = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: unbase64(salt), iterations: 100000, hash: "SHA-256" }, material, 256);
+  return new Uint8Array(bits);
+}
+
+function matchesHash(actual, expected) {
+  let difference = actual.length ^ expected.length;
+  for (let i = 0; i < actual.length; i++) difference |= actual[i] ^ expected[i];
+  return difference === 0;
+}
+
+function validPassword(value) {
+  return typeof value === "string" && value.length >= 12 && value.length <= 128;
+}
+
+async function exchange(env, fields) {
+  const result = await fetch(AUTH + "/token", {
+    method: "POST", redirect: "error", signal: AbortSignal.timeout(10000),
+    body: new URLSearchParams({ client_id: env.MS_CLIENT_ID, client_secret: env.MS_CLIENT_SECRET, ...fields }),
+  });
+  return result.json();
+}
+
+export class EchoDriveVault {
+  constructor(ctx, env) {
+    this.storage = ctx.storage;
+    this.env = env;
+    this.queue = Promise.resolve();
+    this.access = null;
+  }
+
+  fetch(request) {
+    const job = this.queue.then(() => this.handle(request));
+    this.queue = job.catch(() => {});
+    return job;
+  }
+
+  async handle(request) {
+    const operation = new URL(request.url).pathname;
+    const data = await request.json();
+    const now = Date.now();
+    const owner = this.env.MS_OWNER_ID.trim();
+    const saved = await this.storage.get("vault");
+    const state = saved?.owner === owner ? saved : { owner, sessions: [], failures: [] };
+    const save = () => this.storage.put("vault", state);
+    const sessions = () => state.sessions.filter(session => session.until > now);
+    const result = (body, status = 200) => Response.json(body, { status });
+
+    if (operation === "/bind") {
+      state.pending = {
+        ticket: await digest(data.ticket),
+        token: await encryptToken(this.env, data.refresh),
+        until: now + 10 * 60 * 1000,
+      };
+      await save();
+      return result({});
+    }
+
+    if (operation === "/setup") {
+      const pending = state.pending;
+      if (!pending || pending.until <= now || pending.ticket !== await digest(data.ticket)) {
+        return result({ code: "setup_expired" }, 403);
+      }
+      if (!validPassword(data.password)) return result({ code: "password_length" }, 400);
+      const salt = base64(crypto.getRandomValues(new Uint8Array(16)));
+      state.password = { salt, hash: base64(await passwordHash(data.password, salt)) };
+      state.refresh = pending.token;
+      state.sessions = [];
+      state.failures = [];
+      delete state.pending;
+      this.access = null;
+      await save();
+      return result({});
+    }
+
+    if (operation === "/unlock") {
+      if (!state.password || !state.refresh) return result({ code: "relink" }, 409);
+      state.failures = state.failures.filter(time => time > now - ATTEMPT_WINDOW);
+      if (state.failures.length >= MAX_ATTEMPTS) return result({ code: "limited" }, 429);
+      const valid = validPassword(data.password) &&
+        matchesHash(await passwordHash(data.password, state.password.salt), unbase64(state.password.hash));
+      if (!valid) {
+        state.failures.push(now);
+        await save();
+        return result({ code: "bad_password" }, 401);
+      }
+      const session = randomToken();
+      state.sessions = [...sessions().slice(-9), { hash: await digest(session), until: now + SESSION_SECONDS * 1000 }];
+      state.failures = [];
+      await save();
+      return result({ session });
+    }
+
+    const hash = await digest(data.session);
+    const active = sessions();
+    if (operation === "/logout") {
+      state.sessions = active.filter(session => session.hash !== hash);
+      if (state.sessions.length !== active.length) await save();
+      return result({});
+    }
+
+    if (operation !== "/token" || !active.some(session => session.hash === hash)) {
+      return result({ code: "locked" }, 401);
+    }
+    if (!state.refresh) return result({ code: "relink" }, 409);
+    if (this.access?.owner === owner && this.access.until > now) return result({ token: this.access.token });
+
+    let refresh;
+    try {
+      refresh = await decryptToken(this.env, state.refresh);
+    } catch {
+      return result({ code: "relink" }, 409);
+    }
+    const grant = await exchange(this.env, { grant_type: "refresh_token", refresh_token: refresh, scope: SCOPE });
+    if (grant.error === "invalid_grant" || grant.error === "interaction_required") {
+      delete state.refresh;
+      state.sessions = [];
+      this.access = null;
+      await save();
+      return result({ code: "relink" }, 409);
+    }
+    if (!grant.access_token || !(Number(grant.expires_in) > 30)) {
+      return result({ code: "upstream" }, 502);
+    }
+    if (grant.refresh_token && grant.refresh_token !== refresh) {
+      state.refresh = await encryptToken(this.env, grant.refresh_token);
+      await save();
+    }
+    this.access = { owner, token: grant.access_token, until: now + (Number(grant.expires_in) - 30) * 1000 };
+    return result({ token: this.access.token });
+  }
+}
+
+async function vault(env, operation, payload) {
+  const stub = env.ECHO_VAULT.get(env.ECHO_VAULT.idFromName("owner"));
+  const response = await stub.fetch("https://vault.internal/" + operation, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  return response.json();
+}
+
+function passwordPage(message = "", status = 200, headers) {
+  return page("EchoDrive", `<p>${escapeHtml(message || "输入网盘密码解锁。")}</p>
+    <form method="post" action="/unlock"><label>网盘密码
+    <input type="password" name="password" autocomplete="current-password" maxlength="128" required></label>
+    <button>解锁</button></form>
+    <p><small><a href="/auth/login">首次绑定或重置密码</a></small></p>`, status, headers);
+}
+
+function setupPage(message = "", status = 200) {
+  return page("设置 EchoDrive 密码", `<p>${escapeHtml(message || "微软账号已验证。请设置至少 12 个字符的独立网盘密码。")}</p>
+    <form method="post" action="/setup"><label>新网盘密码
+    <input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+    <label>再输一次 <input type="password" name="confirm" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+    <button>保存并进入网盘</button></form>`, status);
+}
+
+async function passwordForm(request) {
+  const size = Number(request.headers.get("Content-Length"));
+  if (!size || size > 4096) throw new Problem("密码表单无效。", 400);
+  return readForm(request);
+}
+
+async function unlock(env, password) {
+  const result = await vault(env, "unlock", { password });
+  if (result.code === "limited") return passwordPage("尝试次数过多，请稍后再试（最多等待 10 分钟）。", 429);
+  if (result.code === "relink") return passwordPage("请先绑定微软账号，或重新绑定已失效的授权。", 409);
+  if (!result.session) return passwordPage("密码错误。", 401);
+  const headers = new Headers();
+  setCookie(headers, SETUP, "", 0);
+  setCookie(headers, SESSION, result.session, SESSION_SECONDS);
+  return redirect("/", headers);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.origin !== SITE) return response("Not found", 404);
-    if (!env.MS_CLIENT_ID || !env.MS_CLIENT_SECRET || !env.MS_OWNER_ID?.trim()) {
-      return page("缺少 Worker 配置", "<p>检查 MS_CLIENT_ID、MS_CLIENT_SECRET 和 MS_OWNER_ID。</p>", 503);
+    if (!env.MS_CLIENT_ID || !env.MS_CLIENT_SECRET || !env.MS_OWNER_ID?.trim() || !env.ECHO_VAULT) {
+      return page("缺少 Worker 配置", "<p>检查 MS_CLIENT_ID、MS_CLIENT_SECRET 、MS_OWNER_ID 和 ECHO_VAULT。</p>", 503);
     }
 
     try {
@@ -322,16 +486,34 @@ export default {
       if (isGet && ["/auth/login", "/auth/callback"].includes(route)) return await login(request, url, env);
 
       if (isPost && request.headers.get("Origin") !== SITE) throw new Problem("请求来源无效。", 403);
+      const session = readCookie(request, SESSION);
+      const ticket = readCookie(request, SETUP);
+      if (route === "/setup" && (isGet || isPost)) {
+        if (!validTicket(ticket)) return passwordPage("请先用网盘主人的微软账号完成绑定。", 403);
+        if (isGet) return setupPage();
+        const form = await passwordForm(request);
+        const password = form.get("password");
+        if (!validPassword(password)) return setupPage("请输入 12 到 128 个字符。", 400);
+        if (password !== form.get("confirm")) return setupPage("两次输入的密码不一致。", 400);
+        const result = await vault(env, "setup", { ticket, password });
+        if (result.code) return passwordPage("设置已过期，请重新绑定微软账号。", 403);
+        return await unlock(env, password);
+      }
+      if (isPost && route === "/unlock") {
+        const form = await passwordForm(request);
+        return await unlock(env, form.get("password"));
+      }
       if (isPost && route === "/logout") {
+        if (validTicket(session)) await vault(env, "logout", { session });
         const headers = new Headers();
-        for (let i = 0; i < 3; i++) setCookie(headers, SESSION + i, "", 0);
+        setCookie(headers, SESSION, "", 0);
         return redirect("/", headers);
       }
-      const token = await readSession(request, env);
-      if (!token) {
-        return page("EchoDrive", '<p>这是私人网盘。</p><a href="/auth/login">登录微软账号</a>', 401);
-      }
-
+      if (!validTicket(session)) return passwordPage();
+      const { token, code } = await vault(env, "token", { session });
+      if (code === "relink") return passwordPage("OneDrive 授权需要重新绑定。", 409);
+      if (code === "upstream") throw new Problem("微软授权服务暂时不可用。", 502);
+      if (!token) return passwordPage();
       const parts = folderPath(url);
       if (isGet && route === "/") return await list(token, url, parts);
       if (isGet && route === "/download") return await download(token, url, parts);
@@ -342,7 +524,7 @@ export default {
     } catch (error) {
       const known = error instanceof Problem;
       return page("操作失败", `<p>${escapeHtml(known ? error.message : "请求失败，请重试。")}</p>
-        <p><a href="/">回到首页</a> · <a href="/auth/login">重新登录</a></p>`, known ? error.status : 502);
+        <p><a href="/">回到首页</a> · <a href="/auth/login">重新绑定微软账号</a></p>`, known ? error.status : 502);
     }
   },
 };
