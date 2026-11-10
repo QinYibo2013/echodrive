@@ -385,7 +385,7 @@ async function list(token, url, parts) {
   return page("EchoDrive", `<div class="drive-layout"><aside class="side" aria-label="网盘导航">
     <div class="side-caption">文件</div>
     <a class="side-link active" href="/">${icon("folder")}我的文件</a>
-    <a class="side-link" href="https://onedrive.live.com/?v=recyclebin" target="_blank" rel="noopener noreferrer" aria-label="回收站（在新标签页打开 OneDrive）">${icon("trash")}回收站</a>
+    <a class="side-link" href="https://onedrive.live.com/recycle" target="_blank" rel="noopener noreferrer" aria-label="回收站（在新标签页打开 OneDrive）">${icon("trash")}回收站</a>
     ${parts.length ? `<a class="side-link" href="${href("/", parts.slice(0, -1))}">${icon("back")}上一级文件夹</a>` : ""}
     <div class="storage-note"><strong>OneDrive</strong>EchoDrive 文件存储</div>
     </aside><main class="shell"><div class="toolbar"><nav class="crumbs" aria-label="当前位置">
