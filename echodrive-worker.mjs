@@ -1,7 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 
-const SITE = "https://echodrive.qinyibo-2013-9.workers.dev";
-const CALLBACK = SITE + "/auth/callback";
+const SITE_ORIGINS = new Set([
+  "https://echodrive.cc.cd",
+  "https://echodrive.qinyibo-2013-9.workers.dev",
+]);
 const AUTH = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const ROOT = "/me/drive/special/approot";
@@ -277,12 +279,13 @@ async function readForm(request) {
 }
 
 async function login(request, url, env) {
+  const callback = url.origin + "/auth/callback";
   if (url.pathname === "/auth/login") {
     const state = crypto.randomUUID();
     const verifier = crypto.randomUUID() + crypto.randomUUID();
     const challenge = base64(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(verifier))));
     const query = new URLSearchParams({
-      client_id: env.MS_CLIENT_ID, response_type: "code", redirect_uri: CALLBACK,
+      client_id: env.MS_CLIENT_ID, response_type: "code", redirect_uri: callback,
       scope: SCOPE, state, code_challenge: challenge, code_challenge_method: "S256",
       prompt: "select_account",
     });
@@ -299,7 +302,7 @@ async function login(request, url, env) {
     return page("登录未完成", '<p><a href="/auth/login">重新登录</a></p>', 400, headers);
   }
   const grant = await exchange(env, {
-    grant_type: "authorization_code", code, redirect_uri: CALLBACK, code_verifier: verifier,
+    grant_type: "authorization_code", code, redirect_uri: callback, code_verifier: verifier,
   });
   if (!grant.access_token || !grant.refresh_token) {
     return page("微软授权未完成", '<p>请重新登录并允许 EchoDrive 保持 OneDrive 授权。</p><a href="/auth/login">重试</a>', 502, headers);
@@ -676,7 +679,7 @@ async function unlock(env, password) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.origin !== SITE) return response("Not found", 404);
+    if (!SITE_ORIGINS.has(url.origin)) return response("Not found", 404);
     if (request.method === "GET" && url.pathname === "/ui.js") {
       return response(UI_SCRIPT, 200, { "Content-Type": "text/javascript; charset=utf-8" });
     }
@@ -694,7 +697,7 @@ export default {
       const isPost = request.method === "POST";
       if (isGet && ["/auth/login", "/auth/callback"].includes(route)) return await login(request, url, env);
 
-      if (isPost && request.headers.get("Origin") !== SITE) throw new Problem("请求来源无效。", 403);
+      if (isPost && request.headers.get("Origin") !== url.origin) throw new Problem("请求来源无效。", 403);
       const session = readCookie(request, SESSION);
       if (isPost && route === "/unlock") {
         const form = await passwordForm(request);
