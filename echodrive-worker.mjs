@@ -35,7 +35,7 @@ const escapeHtml = value => String(value).replace(/[&<>"']/g,
 function response(body, status = 200, extra) {
   const headers = new Headers(extra);
   headers.set("Cache-Control", "private, no-store");
-  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("Referrer-Policy", "strict-origin");
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers });
@@ -181,7 +181,7 @@ async function login(request, url, env) {
   }
   await vault(env, "bind", { refresh: grant.refresh_token });
   setCookie(headers, SESSION, "", 0);
-  return passwordPage("OneDrive 已绑定。请输入网盘密码。", 200, headers);
+  return redirect("/?bound=1", headers);
 }
 
 async function list(token, url, parts) {
@@ -514,7 +514,10 @@ export default {
         setCookie(headers, SESSION, "", 0);
         return redirect("/", headers);
       }
-      if (!validTicket(session)) return passwordPage();
+      if (!validTicket(session)) {
+        const bound = isGet && route === "/" && url.searchParams.get("bound") === "1";
+        return passwordPage(bound ? "OneDrive 已绑定。请输入网盘密码。" : "");
+      }
       const { token, code } = await vault(env, "token", { session });
       if (code === "relink") return passwordPage("OneDrive 授权需要重新绑定。", 409);
       if (code === "upstream") throw new Problem("微软授权服务暂时不可用。", 502);
