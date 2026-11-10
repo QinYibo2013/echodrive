@@ -7,7 +7,7 @@
 1. 将现有的 `echodrive` Worker 连接到此仓库的 `main` 分支。
 2. 根目录使用 `/`，构建命令留空，部署命令使用 `npx wrangler deploy`。
 3. 在 Worker 的运行时变量中配置 `MS_CLIENT_ID`，在运行时密钥中配置 `MS_CLIENT_SECRET` 、`MS_OWNER_ID` 和 `ECHO_PASSWORD`。
-4. 在 Microsoft Entra 的 Web 重定向 URI 中配置 Worker 的 `/auth/callback` 地址。部署到其他域名时，记得同步修改源码中的 `SITE`。
+4. 在 Microsoft Entra 的 Web 重定向 URI 中配置 Worker 的 `/auth/callback` 地址。当前支持 `https://echodrive.cc.cd/auth/callback` 和原 `workers.dev` 回调。新增域名时，在源码的 `SITE_ORIGINS` 中登记域名，并在 Microsoft Entra 中添加对应的 Web 回调地址。
 
 网盘仅允许 `MS_OWNER_ID` 对应的微软账号访问。所有密钥通过 Cloudflare 配置。
 
