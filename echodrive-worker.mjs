@@ -1,3 +1,5 @@
+import { DurableObject } from "cloudflare:workers";
+
 const SITE = "https://echodrive.qinyibo-2013-9.workers.dev";
 const CALLBACK = SITE + "/auth/callback";
 const AUTH = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
@@ -167,7 +169,13 @@ async function login(request, url, env) {
   if (!grant.access_token || !grant.refresh_token) {
     return page("微软授权未完成", '<p>请重新登录并允许 EchoDrive 保持 OneDrive 授权。</p><a href="/auth/login">重试</a>', 502, headers);
   }
-  const profile = await (await graph(grant.access_token, "/me?$select=id")).json();
+  let profile;
+  try {
+    profile = await (await graph(grant.access_token, "/me?$select=id")).json();
+  } catch (error) {
+    if (error instanceof Problem) throw error;
+    throw new Problem("读取微软账号资料失败（MS-PROFILE）。", 502);
+  }
   if (profile.id !== env.MS_OWNER_ID.trim()) {
     return page("此账号没有访问权限", '<a href="/auth/login">切换微软账号</a>', 403, headers);
   }
@@ -308,23 +316,38 @@ function matchesHash(actual, expected) {
 }
 
 async function exchange(env, fields) {
-  const result = await fetch(AUTH + "/token", {
-    method: "POST", redirect: "error", signal: AbortSignal.timeout(10000),
-    body: new URLSearchParams({ client_id: env.MS_CLIENT_ID, client_secret: env.MS_CLIENT_SECRET, ...fields }),
-  });
-  return result.json();
+  let result;
+  try {
+    result = await fetch(AUTH + "/token", {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(10000),
+      body: new URLSearchParams({ client_id: env.MS_CLIENT_ID, client_secret: env.MS_CLIENT_SECRET, ...fields }),
+    });
+  } catch {
+    throw new Problem("连接微软授权服务失败（MS-CONNECT）。", 502);
+  }
+  if (result.headers.get("Content-Type")?.includes("application/json")) {
+    return result.json();
+  }
+  throw new Problem(`微软授权服务返回了意外响应（MS-TOKEN / HTTP ${result.status}）。`, 502);
 }
 
-export class EchoDriveVault {
+export class EchoDriveVault extends DurableObject {
   constructor(ctx, env) {
+    super(ctx, env);
     this.storage = ctx.storage;
-    this.env = env;
     this.queue = Promise.resolve();
     this.access = null;
   }
 
   fetch(request) {
-    const job = this.queue.then(() => this.handle(request));
+    const operation = new URL(request.url).pathname;
+    const job = this.queue.then(() => this.handle(request)).catch(error => {
+      if (error instanceof Problem) {
+        return Response.json({ serviceError: error.message }, { status: error.status });
+      }
+      console.error("EchoDrive vault operation failed", operation, error?.name || "Error");
+      return Response.json({ code: "vault_error" }, { status: 502 });
+    });
     this.queue = job.catch(() => {});
     return job;
   }
@@ -418,11 +441,23 @@ export class EchoDriveVault {
 }
 
 async function vault(env, operation, payload) {
-  const stub = env.ECHO_VAULT.get(env.ECHO_VAULT.idFromName("owner"));
-  const response = await stub.fetch("https://vault.internal/" + operation, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-  });
-  return response.json();
+  let result;
+  try {
+    const stub = env.ECHO_VAULT.getByName("owner");
+    const request = new Request("https://vault.internal/" + operation, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    const reply = await stub.fetch(request);
+    result = await reply.json();
+  } catch (error) {
+    console.error("EchoDrive vault connection failed", operation, error?.name || "Error");
+    throw new Problem(`Cloudflare 无法连接密码存储（VAULT-CONNECT / ${operation}）。`, 502);
+  }
+  if (result.serviceError) throw new Problem(result.serviceError, 502);
+  if (result.code === "vault_error") {
+    throw new Problem(`Cloudflare 密码存储操作失败（VAULT-STORE / ${operation}）。`, 502);
+  }
+  return result;
 }
 
 function passwordPage(message = "", status = 200, headers) {
@@ -461,8 +496,8 @@ export default {
       return page("缺少有效的网盘密码", "<p>请在 Worker 的运行时密钥中设置 ECHO_PASSWORD（最多 128 个字符）。</p>", 503);
     }
 
+    const route = url.pathname;
     try {
-      const route = url.pathname;
       const isGet = request.method === "GET";
       const isPost = request.method === "POST";
       if (isGet && ["/auth/login", "/auth/callback"].includes(route)) return await login(request, url, env);
@@ -493,7 +528,8 @@ export default {
       throw new Problem("页面不存在。", 404);
     } catch (error) {
       const known = error instanceof Problem;
-      return page("操作失败", `<p>${escapeHtml(known ? error.message : "请求失败，请重试。")}</p>
+      if (!known) console.error("EchoDrive request failed", route, error?.name || "Error");
+      return page("操作失败", `<p>${escapeHtml(known ? error.message : `请求失败（ECHO-REQUEST / ${route}）。`)}</p>
         <p><a href="/">回到首页</a> · <a href="/auth/login">重新绑定微软账号</a></p>`, known ? error.status : 502);
     }
   },
