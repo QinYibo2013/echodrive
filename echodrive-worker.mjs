@@ -47,6 +47,7 @@ const ICONS = {
   file: '<path d="M6 3h8l4 4v14H6z M14 3v5h4 M9 12h6m-6 4h6"/>',
   search: '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 5 5"/>',
   back: '<path d="M20 12H5m6-6-6 6 6 6"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5m4-5v5"/>',
   exit: '<path d="M12 4H5v16h7m-2-8h11m-4-4 4 4-4 4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   upload: '<path d="M12 16V4m-5 5 5-5 5 5M4 15v5h16v-5"/>',
@@ -384,6 +385,7 @@ async function list(token, url, parts) {
   return page("EchoDrive", `<div class="drive-layout"><aside class="side" aria-label="网盘导航">
     <div class="side-caption">文件</div>
     <a class="side-link active" href="/">${icon("folder")}我的文件</a>
+    <a class="side-link" href="https://onedrive.live.com/?v=recyclebin" target="_blank" rel="noopener noreferrer" aria-label="回收站（在新标签页打开 OneDrive）">${icon("trash")}回收站</a>
     ${parts.length ? `<a class="side-link" href="${href("/", parts.slice(0, -1))}">${icon("back")}上一级文件夹</a>` : ""}
     <div class="storage-note"><strong>OneDrive</strong>EchoDrive 文件存储</div>
     </aside><main class="shell"><div class="toolbar"><nav class="crumbs" aria-label="当前位置">
