@@ -37,23 +37,105 @@ function response(body, status = 200, extra) {
   headers.set("Cache-Control", "private, no-store");
   headers.set("Referrer-Policy", "strict-origin");
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  headers.set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(body, { status, headers });
 }
 
-function page(title, content, status = 200, extra) {
+const ICONS = {
+  cloud: '<path d="M6.5 18a4.5 4.5 0 0 1-.4-9 6 6 0 0 1 11.5 1.6A3.8 3.8 0 0 1 18 18z"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  file: '<path d="M6 3h8l4 4v14H6z M14 3v5h4 M9 12h6m-6 4h6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  upload: '<path d="M12 16V4m-5 5 5-5 5 5M4 15v5h16v-5"/>',
+  lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3m-4 5v2"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  dots: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+};
+
+function icon(name) {
+  return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+}
+
+const UI_SCRIPT = `
+document.addEventListener("click", function (event) {
+  const trigger = event.target.closest("[data-open]");
+  if (trigger) {
+    const dialog = document.getElementById(trigger.dataset.open);
+    if (dialog && !dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+      document.querySelectorAll("details[open]").forEach(menu => menu.open = false);
+    }
+  }
+  const close = event.target.closest("[data-close]");
+  if (close) {
+    const dialog = close.closest("dialog");
+    if (typeof dialog.close === "function") dialog.close();
+    else dialog.removeAttribute("open");
+  }
+  if (!event.target.closest("details")) {
+    document.querySelectorAll("details[open]").forEach(menu => menu.open = false);
+  }
+  if (event.target.closest("[data-dismiss]")) event.target.closest(".toast").remove();
+});
+document.querySelectorAll("time[datetime]").forEach(time => {
+  const date = new Date(time.dateTime);
+  if (!Number.isNaN(date.getTime())) time.textContent = new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
+  }).format(date);
+});
+const toast = document.querySelector(".toast");
+if (toast) {
+  const url = new URL(location.href);
+  url.searchParams.delete("done");
+  history.replaceState(null, "", url);
+  setTimeout(() => { if (!toast.matches(":focus-within")) toast.remove(); }, 6000);
+}
+`;
+
+function page(title, content, status = 200, extra, layout = "center") {
   const headers = new Headers(extra);
   headers.set("Content-Type", "text/html; charset=utf-8");
-  return response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(title)} · EchoDrive</title><style>
-  body{font:16px/1.5 system-ui,sans-serif;background:#f5f7fb;color:#182238;margin:0}
-  main{max-width:850px;margin:auto;padding:24px 16px} h1{margin:0 0 16px}
-  header,li,.tools{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-  header{justify-content:space-between} li,.panel{background:white;border:1px solid #dbe3ef;border-radius:12px;padding:12px;margin:8px 0}
-  ul{padding:0;list-style:none} li strong{flex:1;min-width:120px;overflow-wrap:anywhere}
-  a{color:#1752ab} button,input{font:inherit;max-width:100%} button{cursor:pointer}
-  label{display:block} form{margin:0} small{color:#41516c} details{max-width:100%}
-  </style><main><header><h1>${escapeHtml(title)}</h1></header>${content}</main></html>`, status, headers);
+  return response(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title === "EchoDrive" ? title : escapeHtml(title) + " · EchoDrive"}</title><script src="/ui.js" defer></script><style>
+  :root{--bg:#f7f8fa;--paper:#fff;--ink:#22272f;--muted:#5d6877;--line:#e2e6ec;--blue:#0967b9;--pale:#e9f3ff;--shadow:0 10px 30px #15253e20}
+  *,*::before,*::after{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}button,input,summary{font:inherit}button,summary{cursor:pointer}form{margin:0}
+  :focus-visible{outline:3px solid #3292e7;outline-offset:3px}svg{width:20px;height:20px;flex:none;vertical-align:middle}
+  .bar{height:64px;border-bottom:1px solid var(--line);background:var(--paper);display:flex;align-items:center;padding:0 max(20px,calc((100vw - 1360px)/2));gap:14px}
+  .brand{display:inline-flex;align-items:center;gap:10px;color:var(--ink);font-size:19px;font-weight:750;white-space:nowrap}
+  .mark{display:grid;place-items:center;background:linear-gradient(140deg,#1874c9,#514dc1);color:white;width:36px;height:36px;border-radius:10px}.mark svg{width:24px;height:24px}
+  .brand:hover{text-decoration:none}.shell{max-width:1400px;margin:auto;padding:30px 28px}.center{display:grid;place-items:center;min-height:calc(100vh - 64px);padding:28px 16px}
+  .card{width:min(100%,420px);background:var(--paper);border:1px solid var(--line);border-radius:20px;padding:34px;box-shadow:0 18px 54px #18395712}.card h1{font-size:26px;margin:13px 0 6px}
+  .lock{color:var(--blue);background:var(--pale);width:48px;height:48px;border-radius:14px;display:grid;place-items:center}.lock svg{width:24px;height:24px}
+  p{margin:0 0 16px}.muted,.help{color:var(--muted)}.help{font-size:13px}.card form{margin:22px 0 14px}.card form .primary{width:100%;justify-content:center;margin-top:14px}
+  .toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;margin-bottom:20px}.actions,.crumbs,.name,.dialog-actions{display:flex;align-items:center;gap:10px}
+  .crumbs{flex-wrap:wrap;min-width:0;font-size:21px;overflow-wrap:anywhere}.crumbs a,.crumbs .sep{color:var(--muted)}.crumbs strong{font-weight:720}.sep{font-size:17px}
+  .btn,summary{display:inline-flex;align-items:center;justify-content:center;gap:8px;color:var(--ink);min-height:40px;border:1px solid var(--line);border-radius:10px;padding:7px 13px;background:var(--paper);white-space:nowrap;font-weight:600}
+  .btn:hover,summary:hover{background:#eff3f8;text-decoration:none}.primary{background:var(--blue);border-color:var(--blue);color:white}.primary:hover{background:#07599f}.quiet{border-color:transparent;background:transparent}.icon-btn{padding:6px;width:38px;min-height:36px}
+  details{position:relative}summary{list-style:none}summary::-webkit-details-marker{display:none}.menu{position:absolute;z-index:2;right:0;top:calc(100% + 7px);width:max-content;min-width:170px;max-width:calc(100vw - 32px);padding:6px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+  .menu button{width:100%;justify-content:flex-start;border:0;border-radius:7px}.menu .danger{color:#a62936}
+  .files{border:1px solid var(--line);border-radius:14px;background:var(--paper);min-height:380px}.grid{width:100%;border-spacing:0;table-layout:fixed;text-align:left}
+  .grid th,.grid td{padding:12px 14px;border-bottom:1px solid var(--line)}.grid th{font-weight:600;color:var(--muted);font-size:13px;background:#fbfcfe}
+  .grid th:first-child{border-top-left-radius:14px}.grid th:last-child{border-top-right-radius:14px}.grid tr:last-child td{border-bottom:0}.grid tbody tr:hover{background:#f7faff}
+  .grid .date{width:24%}.grid .size{width:15%}.grid .row-actions{width:64px;text-align:right}.name{font-weight:600;overflow-wrap:anywhere}.name a{color:var(--ink)}
+  .file-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;border-radius:8px;color:#286ab4;background:#eaf3ff}.file-icon.folder{color:#975600;background:#fff0cf}.size,.date{color:var(--muted);font-size:13px}
+  .empty{text-align:center;min-height:380px;padding:55px 18px;display:grid;place-content:center;justify-items:center}.empty-art{display:grid;place-items:center;width:114px;height:90px;border-radius:28px;background:linear-gradient(145deg,#e6f3ff,#f0ebff);color:#4d69c2;margin-bottom:20px}.empty-art svg{width:54px;height:54px}
+  .empty h2{margin:0 0 7px;font-size:20px}.empty p{margin-bottom:16px}.pager{padding:16px 0;text-align:right}
+  dialog{width:min(460px,calc(100% - 32px));padding:24px;border:1px solid var(--line);border-radius:15px;color:var(--ink);box-shadow:var(--shadow)}dialog::backdrop{background:#15263d66}
+  .dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.dialog-head h2{margin:0;font-size:20px}.dialog-actions{justify-content:flex-end;margin-top:20px}
+  label{display:block;font-weight:600}input:not([type="hidden"]):not([type="checkbox"]){font:inherit;display:block;width:100%;min-width:0;margin-top:6px;padding:10px 11px;border:1px solid #bfc9d6;border-radius:8px;background:white;color:var(--ink)}
+  .danger-btn{background:#a62936;border-color:#a62936;color:white}.danger-btn:hover{background:#85212c}.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100% - 28px);padding:9px 12px 9px 16px;background:#25282e;color:white;border-radius:10px;box-shadow:var(--shadow);z-index:3}
+  .toast .icon-btn{background:transparent;border:0;color:white}.toast>svg{color:#a6d871}
+  @media(max-width:640px){.bar{height:56px}.center{min-height:calc(100vh - 56px)}.shell{padding:20px 12px}.toolbar{align-items:flex-start}.crumbs{width:100%;font-size:19px}.grid .date{display:none}.grid .size{width:78px}.grid th,.grid td{padding:9px 8px}.grid .row-actions{width:52px}.card{padding:25px}.empty{min-height:320px}.files{min-height:320px}}
+  </style></head><body><header class="bar"><a class="brand" href="/"><span class="mark">${icon("cloud")}</span>EchoDrive</a></header>
+  ${layout === "drive" ? `<main class="shell">${content}</main>` : `<main class="center"><section class="card"><span class="lock">${icon("lock")}</span><h1>${escapeHtml(title)}</h1>${content}</section></main>`}</body></html>`, status, headers);
+}
+
+function dialog(id, title, content) {
+  return `<dialog id="${id}" aria-labelledby="${id}-title"><div class="dialog-head"><h2 id="${id}-title">${title}</h2>
+    <button class="btn quiet icon-btn" type="button" data-close aria-label="关闭">${icon("close")}</button></div>${content}</dialog>`;
 }
 
 function redirect(location, headers = new Headers()) {
@@ -184,38 +266,81 @@ async function login(request, url, env) {
   return redirect("/?bound=1", headers);
 }
 
+const SUCCESS = {
+  mkdir: "已创建文件夹",
+  upload: "文件已上传",
+  rename: "已重命名",
+  delete: "已移到 OneDrive 回收站",
+};
+
+function sizeLabel(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 ** 2) return `${(size / 1024).toFixed(1)} KiB`;
+  return `${(size / 1024 ** 2).toFixed(1)} MiB`;
+}
+
 async function list(token, url, parts) {
-  const query = new URLSearchParams({ $top: "100", $select: "name,folder,file,size,remoteItem,eTag" });
+  const query = new URLSearchParams({ $top: "100", $select: "name,folder,file,size,remoteItem,eTag,lastModifiedDateTime" });
   const cursor = url.searchParams.get("next");
   if (cursor) query.set("$skiptoken", cursor);
   const data = await (await graph(token, appPath(parts) + "/children?" + query)).json();
   const next = data["@odata.nextLink"] ? new URL(data["@odata.nextLink"]).searchParams.get("$skiptoken") : null;
   const href = (route, path, fields) => escapeHtml(localUrl(route, path, fields));
-  const rows = data.value.map(item => {
+  const open = (id, label, glyph = "") =>
+    `<button type="button" class="btn" data-open="${id}">${glyph ? icon(glyph) : ""}${label}</button>`;
+  const submit = (label, danger = false) =>
+    `<div class="dialog-actions"><button class="btn" type="button" data-close>取消</button>
+    <button class="btn ${danger ? "danger-btn" : "primary"}">${label}</button></div>`;
+  const dialogs = [
+    dialog("new-folder", "新建文件夹", `<form method="post" action="${href("/mkdir", parts)}">
+      <label>名称<input name="name" placeholder="请输入文件夹名称" maxlength="255" required autofocus></label>${submit("创建")}</form>`),
+    dialog("upload-file", "上传文件", `<form method="post" enctype="multipart/form-data" action="${href("/upload", parts)}">
+      <p class="help">选择一个文件，单个文件最多 20 MiB。</p><label>选择文件<input type="file" name="file" required></label>${submit("上传")}</form>`),
+  ];
+  const rows = data.value.map((item, index) => {
     const name = escapeHtml(item.name);
     const blocked = item.remoteItem || !validName(item.name);
-    const primary = blocked ? name : item.folder
-      ? `<a href="${href("/", [...parts, item.name])}">${name}</a>`
-      : item.file ? `<a href="${href("/download", parts, { name: item.name })}">${name}</a>` : name;
-    const etag = escapeHtml(item.eTag || "");
-    const inputs = `<input type="hidden" name="name" value="${name}"><input type="hidden" name="etag" value="${etag}">`;
-    return `<li><strong>${primary}</strong><small>${item.folder ? "文件夹" : Number(item.size || 0).toLocaleString() + " B"}</small>
-      ${blocked ? "" : `<details><summary>管理</summary>
-      <form method="post" action="${href("/rename", parts)}">${inputs}
-      <label>新名称 <input name="newName" value="${name}" maxlength="255" required></label><button>重命名</button></form>
-      <form method="post" action="${href("/delete", parts)}">${inputs}
-      <label><input type="checkbox" name="confirm" required> 移到 OneDrive 回收站</label><button>删除</button></form>
-      </details>`}</li>`;
+    const link = blocked ? "" : item.folder ? href("/", [...parts, item.name])
+      : item.file ? href("/download", parts, { name: item.name }) : "";
+    if (!blocked) {
+      const hidden = `<input type="hidden" name="name" value="${name}"><input type="hidden" name="etag" value="${escapeHtml(item.eTag || "")}">`;
+      dialogs.push(
+        dialog(`rename-${index}`, "重命名", `<form method="post" action="${href("/rename", parts)}">${hidden}
+          <label>新名称<input name="newName" value="${name}" maxlength="255" required autofocus></label>${submit("保存")}</form>`),
+        dialog(`delete-${index}`, "删除项目", `<form method="post" action="${href("/delete", parts)}">${hidden}
+          <p>将 <strong>${name}</strong> 移到 OneDrive 回收站？</p><input type="hidden" name="confirm" value="on">${submit("删除", true)}</form>`),
+      );
+    }
+    const modified = escapeHtml(item.lastModifiedDateTime || "");
+    return `<tr><td><div class="name"><span class="file-icon ${item.folder ? "folder" : ""}">${icon(item.folder ? "folder" : "file")}</span>
+      ${link ? `<a href="${link}">${name}</a>` : `<span>${name}</span>`}</div></td>
+      <td class="date">${modified ? `<time datetime="${modified}">${modified.slice(0, 10)}</time>` : "—"}</td>
+      <td class="size">${item.folder ? "—" : sizeLabel(Number(item.size || 0))}</td>
+      <td class="row-actions">${blocked ? "" : `<details><summary class="icon-btn quiet" aria-label="管理 ${name}">${icon("dots")}</summary>
+        <div class="menu">${open(`rename-${index}`, "重命名")}
+        <button class="btn danger" type="button" data-open="delete-${index}">删除</button></div></details>`}</td></tr>`;
   }).join("");
-  return page("EchoDrive", `<div class="tools"><a href="/">根目录</a>
-    ${parts.length ? `<a href="${href("/", parts.slice(0,-1))}">返回上一级</a>` : ""}
-    <form method="post" action="/logout"><button>退出</button></form></div>
-    <p>当前目录 · ${escapeHtml(parts.join(" / ") || "根目录")}</p>
-    <div class="panel tools">
-    <form method="post" action="${href("/mkdir", parts)}"><label>文件夹名称 <input name="name" maxlength="255" required></label><button>新建文件夹</button></form>
-    <form method="post" enctype="multipart/form-data" action="${href("/upload", parts)}"><label>文件（最多 20 MiB） <input type="file" name="file" required></label><button>上传</button></form></div>
-    <ul>${rows || "<li>这个文件夹是空的。</li>"}</ul>
-    ${next ? `<a href="${href("/", parts, { next })}">下一页</a>` : ""}`);
+  const crumbs = parts.map((part, index) => {
+    const name = escapeHtml(part);
+    return `<span class="sep" aria-hidden="true">›</span>${index === parts.length - 1
+      ? `<strong aria-current="page">${name}</strong>`
+      : `<a href="${href("/", parts.slice(0, index + 1))}">${name}</a>`}`;
+  }).join("");
+  const done = url.searchParams.get("done");
+  const toast = Object.hasOwn(SUCCESS, done) ? `<div class="toast" role="status">${icon("check")}${SUCCESS[done]}
+    <button class="btn icon-btn" type="button" data-dismiss aria-label="关闭提示">${icon("close")}</button></div>` : "";
+  return page("EchoDrive", `<div class="toolbar"><nav class="crumbs" aria-label="当前位置">
+    ${parts.length ? '<a href="/">我的文件</a>' : '<strong aria-current="page">我的文件</strong>'}${crumbs}</nav>
+    <div class="actions"><form method="post" action="/logout"><button class="btn quiet">退出</button></form>
+    <details><summary class="primary">${icon("plus")}创建或上传</summary><div class="menu">
+    ${open("new-folder", "新建文件夹", "folder")}${open("upload-file", "文件上传", "upload")}</div></details></div></div>
+    <section class="files" aria-label="文件列表">${rows ? `<table class="grid"><thead><tr>
+      <th scope="col">名称</th><th scope="col" class="date">修改时间</th><th scope="col" class="size">大小</th><th scope="col" class="row-actions">操作</th>
+      </tr></thead><tbody>${rows}</tbody></table>`
+      : `<div class="empty"><span class="empty-art">${icon("cloud")}</span><h2>此文件夹为空</h2>
+        <p class="muted">上传文件或新建文件夹来整理你的资料。</p>${open("upload-file", "上传文件", "upload")}</div>`}</section>
+    ${next ? `<div class="pager"><a class="btn" href="${href("/", parts, { next })}">下一页 →</a></div>` : ""}
+    ${dialogs.join("")}${toast}`, 200, undefined, "drive");
 }
 
 async function download(token, url, parts) {
@@ -272,7 +397,7 @@ async function modify(request, token, route, parts) {
       await graph(token, itemPath(item), { method: "DELETE", headers });
     }
   }
-  return redirect(localUrl("/", parts));
+  return redirect(localUrl("/", parts, { done: route.slice(1) }));
 }
 
 const SESSION_SECONDS = 12 * 60 * 60;
@@ -461,11 +586,11 @@ async function vault(env, operation, payload) {
 }
 
 function passwordPage(message = "", status = 200, headers) {
-  return page("EchoDrive", `<p>${escapeHtml(message || "输入网盘密码解锁。")}</p>
+  return page("EchoDrive", `<p class="muted">${escapeHtml(message || "输入网盘密码，访问你的私人文件。")}</p>
     <form method="post" action="/unlock"><label>网盘密码
-    <input type="password" name="password" autocomplete="current-password" maxlength="128" required></label>
-    <button>解锁</button></form>
-    <p><small><a href="/auth/login">首次绑定或重新授权 OneDrive</a></small></p>`, status, headers);
+    <input type="password" name="password" placeholder="请输入网盘密码" autocomplete="current-password" maxlength="128" required></label>
+    <button class="btn primary">${icon("lock")}解锁</button></form>
+    <div class="help"><a href="/auth/login">首次绑定或重新授权 OneDrive</a></div>`, status, headers);
 }
 
 async function passwordForm(request) {
@@ -488,6 +613,9 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.origin !== SITE) return response("Not found", 404);
+    if (request.method === "GET" && url.pathname === "/ui.js") {
+      return response(UI_SCRIPT, 200, { "Content-Type": "text/javascript; charset=utf-8" });
+    }
     if (!env.MS_CLIENT_ID || !env.MS_CLIENT_SECRET || !env.MS_OWNER_ID?.trim() || !env.ECHO_VAULT) {
       return page("缺少 Worker 配置", "<p>检查 MS_CLIENT_ID、MS_CLIENT_SECRET 、MS_OWNER_ID 和 ECHO_VAULT。</p>", 503);
     }
